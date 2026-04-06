@@ -56,7 +56,9 @@ jobs:
 
     - name: Build with Gradle
       if: inputs.build_tool == 'gradle'
-      run: ./gradlew build -x test
+      run: |
+        chmod +x ./gradlew
+        ./gradlew build -x test
 
     # -------------------------
     # 3. GHCR login ⭐
