@@ -1,0 +1,88 @@
+name: Common Docker CI
+
+on:
+  workflow_call:
+    inputs:
+      service:
+        required: true
+        type: string
+      image_name:
+        required: true
+        type: string
+    secrets:
+      GH_PAT:
+        required: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - uses: actions/setup-java@v4
+      with:
+        java-version: '17'
+        distribution: 'temurin'
+        cache: maven
+
+    # -------------------------
+    # 1. 환경 결정
+    # -------------------------
+    - name: Set environment
+      run: |
+        if [ "${GITHUB_REF_NAME}" = "main" ]; then
+          ENV="prod"
+        elif [ "${GITHUB_REF_NAME}" = "qa" ]; then
+          ENV="qa"
+        else
+          ENV="dev"
+        fi
+
+        SHORT_SHA=${GITHUB_SHA::7}
+
+        echo "ENV=${ENV}" >> $GITHUB_ENV
+        echo "TAG=${ENV}-${SHORT_SHA}" >> $GITHUB_ENV
+
+    # -------------------------
+    # 2. Build
+    # -------------------------
+    - name: Build with Maven
+      run: ./mvnw clean package -DskipTests
+
+    # -------------------------
+    # 3. GHCR login ⭐
+    # -------------------------
+    - name: Login to GHCR
+      run: echo "${{ secrets.GH_PAT }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
+
+    # -------------------------
+    # 4. Docker build
+    # -------------------------
+    - name: Build image
+      run: docker build -t ${{ inputs.image_name }}:$TAG .
+
+    # -------------------------
+    # 5. Test
+    # -------------------------
+    - name: Run tests
+      run: mvn -B test
+
+    # -------------------------
+    # 6. Push ⭐
+    # -------------------------
+    - name: Push image
+      run: docker push ${{ inputs.image_name }}:$TAG
+
+    # -------------------------
+    # 7. GitOps update
+    # -------------------------
+    - name: Update gitops
+      run: |
+        git clone https://${{ secrets.GH_PAT }}@github.com/erumone/msa-gitops.git
+        cd msa-gitops/apps/${{ inputs.service }}/overlays/$ENV
+        kustomize edit set image ${{ inputs.image_name }}=${{ inputs.image_name }}:$TAG
+        git config user.name "github-actions"
+        git config user.email "actions@github.com"
+        git commit -am "update image -> $TAG"
+        git push
