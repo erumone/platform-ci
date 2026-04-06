@@ -9,6 +9,9 @@ on:
       image_name:
         required: true
         type: string
+      build_tool:
+        required: true
+        type: string
     secrets:
       GH_PAT:
         required: true
@@ -24,7 +27,7 @@ jobs:
       with:
         java-version: '17'
         distribution: 'temurin'
-        cache: maven
+        cache: ${{ inputs.build_tool }}
 
     # -------------------------
     # 1. 환경 결정
@@ -48,7 +51,12 @@ jobs:
     # 2. Build
     # -------------------------
     - name: Build with Maven
+      if: inputs.build_tool == 'maven'
       run: ./mvnw clean package -DskipTests
+
+    - name: Build with Gradle
+      if: inputs.build_tool == 'gradle'
+      run: ./gradlew build -x test
 
     # -------------------------
     # 3. GHCR login ⭐
@@ -65,8 +73,20 @@ jobs:
     # -------------------------
     # 5. Test
     # -------------------------
-    - name: Run tests
+    - name: Run Maven tests
+      if: inputs.build_tool == 'maven'
       run: mvn -B test
+
+    - name: Run Gradle tests
+      if: inputs.build_tool == 'gradle'
+      run: ./gradlew test
+
+    # -------------------------
+    # Security scan
+    # -------------------------
+    - name: Security scan
+      if: env.ENV != 'dev'
+      run: echo "security scan here"
 
     # -------------------------
     # 6. Push ⭐
