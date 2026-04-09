@@ -67,6 +67,8 @@ jobs:
         push: false
         cache-from: type=gha
         cache-to: type=gha,mode=max
+        build-args: |
+          CACHEBUST=${{ github.sha }}
 
     # -------------------------
     # 5. Test
@@ -113,14 +115,8 @@ jobs:
     # 6. Push ⭐
     # -------------------------
     - name: Push image
-      uses: docker/build-push-action@v6
-      with:
-        context: .
-        file: ./Dockerfile
-        tags: ${{ env.IMAGE }}
-        push: true
-        cache-from: type=gha
-        cache-to: type=gha,mode=max
+      run: |
+        docker push $IMAGE
 
     # -------------------------
     # 7. GitOps update
