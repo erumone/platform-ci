@@ -1,0 +1,126 @@
+name: Common Docker CI
+
+permissions:
+  contents: read
+  packages: write
+
+on:
+  workflow_call:
+    inputs:
+      service:
+        required: true
+        type: string
+      image_name:
+        required: true
+        type: string
+    secrets:
+      GH_PAT:
+        required: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@v5
+
+    # -------------------------
+    # 1. 환경 결정
+    # -------------------------
+    - name: Set environment
+      run: |
+        if [ "${GITHUB_REF_NAME}" = "main" ]; then
+          ENV="prod"
+        elif [ "${GITHUB_REF_NAME}" = "qa" ]; then
+          ENV="qa"
+        else
+          ENV="dev"
+        fi
+
+        SHORT_SHA=${GITHUB_SHA::7}
+
+        echo "ENV=${ENV}" >> $GITHUB_ENV
+        echo "TAG=${ENV}-${SHORT_SHA}" >> $GITHUB_ENV
+
+    # -------------------------
+    # 2. Build
+    # -------------------------
+    - name: Set image metadata
+      run: |
+        echo "IMAGE=${{ inputs.image_name }}:$TAG" >> $GITHUB_ENV
+
+    # -------------------------
+    # 3. GHCR login ⭐
+    # -------------------------
+    - name: Login to GHCR
+      run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
+
+    - name: Set up Docker Buildx
+      uses: docker/setup-buildx-action@v3
+
+    # -------------------------
+    # 4. Docker build
+    # -------------------------
+    - name: Build image
+      uses: docker/build-push-action@v6
+      with:
+        context: .
+        file: ./Dockerfile
+        tags: ${{ env.IMAGE }}
+        load: true
+        push: false
+        cache-from: type=gha
+        cache-to: type=gha,mode=max
+
+    # -------------------------
+    # 5. Test
+    # -------------------------
+    - name: Run container
+      run: |
+        docker run -d --name myunoapp-web-test -p 8080:80 $IMAGE
+
+    - name: Verify image
+      run: |
+        curl --fail --retry 10 --retry-delay 3 http://127.0.0.1:8080/
+
+    - name: Stop test container
+      if: always()
+      run: docker rm -f myunoapp-web-test
+
+    # -------------------------
+    # Security scan
+    # -------------------------
+    - name: Security scan
+      if: env.ENV != 'dev'
+      run: echo "security scan here"
+
+    # -------------------------
+    # 6. Push ⭐
+    # -------------------------
+    - name: Push image
+      uses: docker/build-push-action@v6
+      with:
+        context: .
+        file: ./Dockerfile
+        tags: ${{ env.IMAGE }}
+        push: true
+        cache-from: type=gha
+        cache-to: type=gha,mode=max
+
+    # -------------------------
+    # 7. GitOps update
+    # -------------------------
+    - name: Setup Kustomize
+      uses: imranismail/setup-kustomize@v2
+
+    - name: Update gitops
+      run: |
+        git clone https://${{ secrets.GH_PAT }}@github.com/erumone/msa-gitops.git
+        cd msa-gitops/apps/${{ inputs.service }}/overlays/$ENV
+        kustomize edit set image ${{ inputs.image_name }}=$IMAGE
+        git config user.name "github-actions"
+        git config user.email "actions@github.com"
+        git add .
+        git diff --cached --quiet && exit 0
+        git commit -m "update image -> $TAG"
+        git push
