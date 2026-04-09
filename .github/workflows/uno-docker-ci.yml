@@ -1,8 +1,4 @@
-name: Common Docker CI
-
-permissions:
-  contents: read
-  packages: write
+name: Common Uno Docker CI
 
 on:
   workflow_call:
