@@ -77,8 +77,27 @@ jobs:
 
     - name: Verify image
       run: |
-        curl --fail --retry 10 --retry-delay 3 http://127.0.0.1:8080/
+        docker ps -a
 
+        for i in $(seq 1 20); do
+          if curl --fail --retry-all-errors --silent --show-error http://127.0.0.1:8080/ > /tmp/index.html; then
+            test -s /tmp/index.html
+            exit 0
+          fi
+
+          if [ "$(docker inspect -f '{{.State.Running}}' myunoapp-web-test 2>/dev/null)" != "true" ]; then
+            echo "Container stopped unexpectedly"
+            docker logs myunoapp-web-test || true
+            exit 1
+          fi
+
+          sleep 3
+        done
+
+        echo "Timed out waiting for container response"
+        docker logs myunoapp-web-test || true
+        exit 1
+    
     - name: Stop test container
       if: always()
       run: docker rm -f myunoapp-web-test
