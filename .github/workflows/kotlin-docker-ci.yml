@@ -1,1 +1,137 @@
+name: Common Kotlin Docker CI
 
+on:
+  workflow_call:
+    inputs:
+      service:
+        required: true
+        type: string
+      image_name:
+        required: true
+        type: string
+    secrets:
+      GH_PAT:
+        required: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@v5
+
+    # -------------------------
+    # 1. 환경 결정
+    # -------------------------
+    - name: Set environment
+      run: |
+        if [ "${GITHUB_REF_NAME}" = "main" ]; then
+          ENV="prod"
+        elif [ "${GITHUB_REF_NAME}" = "qa" ]; then
+          ENV="qa"
+        else
+          ENV="dev"
+        fi
+
+        SHORT_SHA=${GITHUB_SHA::7}
+
+        echo "ENV=${ENV}" >> $GITHUB_ENV
+        echo "TAG=${ENV}-${SHORT_SHA}" >> $GITHUB_ENV
+
+    # -------------------------
+    # 2. Build
+    # -------------------------
+    - name: Set image metadata
+      run: |
+        echo "IMAGE=${{ inputs.image_name }}:$TAG" >> $GITHUB_ENV
+
+    # -------------------------
+    # 3. GHCR login ⭐
+    # -------------------------
+    - name: Login to GHCR
+      run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
+
+    - name: Set up Docker Buildx
+      uses: docker/setup-buildx-action@v3
+
+    # -------------------------
+    # 4. Docker build
+    # -------------------------
+    - name: Build image
+      uses: docker/build-push-action@v6
+      with:
+        context: .
+        file: ./Dockerfile
+        tags: ${{ env.IMAGE }}
+        load: true
+        push: false
+        cache-from: type=gha
+        cache-to: type=gha,mode=max
+        build-args: |
+          CACHEBUST=${{ github.sha }}
+
+    # -------------------------
+    # 5. Test
+    # -------------------------
+    - name: Run container
+      run: |
+        docker run -d --name mykotlin-web-test -p 8080:80 $IMAGE
+
+    - name: Verify image
+      run: |
+        docker ps -a
+
+        for i in $(seq 1 20); do
+          if curl --fail --retry-all-errors --silent --show-error http://127.0.0.1:8080/ > /tmp/index.html; then
+            test -s /tmp/index.html
+            exit 0
+          fi
+
+          if [ "$(docker inspect -f '{{.State.Running}}' mykotlin-web-test 2>/dev/null)" != "true" ]; then
+            echo "Container stopped unexpectedly"
+            docker logs mykotlin-web-test || true
+            exit 1
+          fi
+
+          sleep 3
+        done
+
+        echo "Timed out waiting for container response"
+        docker logs mykotlin-web-test || true
+        exit 1
+    
+    - name: Stop test container
+      if: always()
+      run: docker rm -f mykotlin-web-test
+
+    # -------------------------
+    # Security scan
+    # -------------------------
+    - name: Security scan
+      if: env.ENV != 'dev'
+      run: echo "security scan here"
+
+    # -------------------------
+    # 6. Push ⭐
+    # -------------------------
+    - name: Push image
+      run: |
+        docker push $IMAGE
+
+    # -------------------------
+    # 7. GitOps update
+    # -------------------------
+    - name: Setup Kustomize
+      uses: imranismail/setup-kustomize@v2
+
+    - name: Update gitops
+      run: |
+        git clone https://${{ secrets.GH_PAT }}@github.com/erumone/msa-gitops.git
+        cd msa-gitops/apps/${{ inputs.service }}/overlays/$ENV
+        kustomize edit set image ${{ inputs.image_name }}=$IMAGE
+        git config user.name "github-actions"
+        git config user.email "actions@github.com"
+        git add .
+        git diff --cached --quiet && exit 0
+        git commit -m "update image -> $TAG"
+        git push
